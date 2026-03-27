@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import https from "node:https";
+import youtubedl from "youtube-dl-exec";
 import {
   extractInstagramShortcode,
   normalizeInstagramUrl,
@@ -26,6 +27,42 @@ export interface InstaPostData {
 interface InstaOEmbed {
   author_name?: string;
   title?: string;
+}
+
+interface YTDlpThumbnail {
+  url?: string;
+  width?: number;
+  height?: number;
+}
+
+interface YTDlpFormat {
+  url?: string;
+  ext?: string;
+  width?: number;
+  height?: number;
+  filesize?: number;
+  filesize_approx?: number;
+  acodec?: string;
+  vcodec?: string;
+}
+
+interface YTDlpInstagramInfo {
+  _type?: string;
+  id?: string;
+  title?: string;
+  description?: string;
+  uploader?: string;
+  thumbnail?: string;
+  thumbnails?: YTDlpThumbnail[];
+  timestamp?: number;
+  like_count?: number;
+  comment_count?: number;
+  ext?: string;
+  url?: string;
+  acodec?: string;
+  vcodec?: string;
+  formats?: YTDlpFormat[];
+  entries?: YTDlpInstagramInfo[];
 }
 
 const UA =
@@ -205,6 +242,130 @@ function extractMediaFromEmbed(html: string, shortcode: string): Omit<
   };
 }
 
+function hasAudio(value: { acodec?: string }): boolean {
+  return Boolean(value.acodec && value.acodec !== "none");
+}
+
+function hasVideo(value: { vcodec?: string; ext?: string }): boolean {
+  return Boolean(
+    (value.vcodec && value.vcodec !== "none") ||
+      value.ext === "mp4"
+  );
+}
+
+function pickBestThumbnail(
+  thumbnail: string | undefined,
+  thumbnails: YTDlpThumbnail[] | undefined
+): string | undefined {
+  if (thumbnail) return thumbnail;
+
+  return thumbnails
+    ?.filter((item) => !!item.url)
+    .sort(
+      (left, right) =>
+        (right.width || 0) * (right.height || 0) -
+        (left.width || 0) * (left.height || 0)
+    )[0]?.url;
+}
+
+function pickBestVideoFormat(formats: YTDlpFormat[] | undefined): YTDlpFormat | null {
+  if (!formats?.length) return null;
+
+  const candidates = formats.filter((format) => !!format.url && hasVideo(format));
+  if (candidates.length === 0) return null;
+
+  return candidates.sort((left, right) => {
+    const leftMuxed = Number(hasAudio(left));
+    const rightMuxed = Number(hasAudio(right));
+    if (leftMuxed !== rightMuxed) return rightMuxed - leftMuxed;
+
+    const heightDelta = (right.height || 0) - (left.height || 0);
+    if (heightDelta !== 0) return heightDelta;
+
+    const widthDelta = (right.width || 0) - (left.width || 0);
+    if (widthDelta !== 0) return widthDelta;
+
+    return (right.filesize || right.filesize_approx || 0) - (left.filesize || left.filesize_approx || 0);
+  })[0];
+}
+
+function mapYtdlpMedia(entry: YTDlpInstagramInfo): InstaMedia | null {
+  const thumbnail = pickBestThumbnail(entry.thumbnail, entry.thumbnails);
+  const bestVideo = pickBestVideoFormat(entry.formats);
+  const directVideoUrl = bestVideo?.url || (hasVideo(entry) ? entry.url : undefined);
+
+  if (directVideoUrl) {
+    return {
+      type: "video",
+      url: directVideoUrl,
+      thumbnail,
+    };
+  }
+
+  const imageUrl = entry.url || thumbnail;
+  if (!imageUrl) return null;
+
+  return {
+    type: "image",
+    url: imageUrl,
+  };
+}
+
+async function fetchMediaFromYtdlp(url: string): Promise<Omit<
+  InstaPostData,
+  "shortcode" | "isCarousel"
+>> {
+  let info: YTDlpInstagramInfo;
+
+  try {
+    info = (await youtubedl(url, {
+      dumpSingleJson: true,
+      noWarnings: true,
+      noCheckCertificates: true,
+      skipDownload: true,
+    })) as YTDlpInstagramInfo;
+  } catch (error) {
+    const stderr =
+      typeof error === "object" &&
+      error !== null &&
+      "stderr" in error &&
+      typeof (error as { stderr?: unknown }).stderr === "string"
+        ? (error as { stderr: string }).stderr.trim()
+        : "";
+    const message =
+      error instanceof Error
+        ? error.message.trim()
+        : typeof error === "string"
+          ? error.trim()
+          : "";
+
+    throw new Error(message || stderr || "Failed to extract Instagram media");
+  }
+
+  const primaryEntry = info.entries?.find(Boolean);
+  const mediaEntries =
+    info._type === "playlist" && info.entries?.length ? info.entries : [info];
+  const media = mediaEntries
+    .map((entry) => mapYtdlpMedia(entry))
+    .filter(
+      (entry, index, collection): entry is InstaMedia =>
+        Boolean(entry?.url) &&
+        collection.findIndex((candidate) => candidate?.url === entry?.url) ===
+          index
+    );
+  const source = primaryEntry || info;
+
+  return {
+    caption: info.description || source.description || "",
+    author: info.uploader || source.uploader || "",
+    authorPic: "",
+    timestamp: String(info.timestamp || source.timestamp || ""),
+    likeCount: Number(info.like_count || source.like_count || 0),
+    commentCount: Number(info.comment_count || source.comment_count || 0),
+    media,
+  };
+}
+
 async function fetchOEmbed(url: string): Promise<InstaOEmbed | null> {
   const oembedUrl = `https://www.instagram.com/api/v1/oembed/?url=${encodeURIComponent(url)}`;
 
@@ -283,31 +444,46 @@ async function requestRemote(
 
 async function fetchInstaData(url: string): Promise<InstaPostData> {
   const normalizedUrl = normalizeInstagramUrl(url);
-  const shortcode = extractInstagramShortcode(url);
+  const shortcode = normalizedUrl
+    ? extractInstagramShortcode(normalizedUrl)
+    : extractInstagramShortcode(url);
 
   if (!normalizedUrl || !shortcode) {
     throw new Error("Invalid Instagram URL");
   }
 
-  const [oembed, embedHtml] = await Promise.all([
-    fetchOEmbed(normalizedUrl),
-    fetchEmbedHtml(normalizedUrl),
-  ]);
+  const oembedPromise = fetchOEmbed(normalizedUrl);
+  let extractedData: Omit<InstaPostData, "shortcode" | "isCarousel"> | null = null;
 
-  const embedData = extractMediaFromEmbed(embedHtml, shortcode);
-  const caption = embedData.caption || oembed?.title || "";
-  const author = embedData.author || oembed?.author_name || "";
+  try {
+    extractedData = await fetchMediaFromYtdlp(normalizedUrl);
+  } catch {
+    extractedData = null;
+  }
+
+  if (!extractedData || extractedData.media.length === 0) {
+    try {
+      const embedHtml = await fetchEmbedHtml(normalizedUrl);
+      extractedData = extractMediaFromEmbed(embedHtml, shortcode);
+    } catch {
+      throw new Error("Could not extract media. The post may be private or deleted.");
+    }
+  }
+
+  const oembed = await oembedPromise;
+  const caption = extractedData.caption || oembed?.title || "";
+  const author = extractedData.author || oembed?.author_name || "";
 
   return {
     shortcode,
     caption,
     author,
-    authorPic: embedData.authorPic,
-    timestamp: embedData.timestamp,
-    likeCount: embedData.likeCount,
-    commentCount: embedData.commentCount,
-    isCarousel: embedData.media.length > 1,
-    media: embedData.media,
+    authorPic: extractedData.authorPic,
+    timestamp: extractedData.timestamp,
+    likeCount: extractedData.likeCount,
+    commentCount: extractedData.commentCount,
+    isCarousel: extractedData.media.length > 1,
+    media: extractedData.media,
   };
 }
 
@@ -334,9 +510,13 @@ export async function GET(request: NextRequest) {
 
     return NextResponse.json(data);
   } catch (err) {
+    const message =
+      err instanceof Error ? err.message : "Failed to fetch Instagram data";
+    const status = message === "Invalid Instagram URL" ? 400 : 500;
+
     return NextResponse.json(
-      { error: err instanceof Error ? err.message : "Failed to fetch Instagram data" },
-      { status: 500 }
+      { error: message },
+      { status }
     );
   }
 }

@@ -18,7 +18,7 @@ import {
 } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
 import { useState, useRef, useCallback } from "react";
-import { motion, AnimatePresence } from "framer-motion";
+import { motion } from "framer-motion";
 import { toPng, toJpeg } from "html-to-image";
 
 import { ThemeToggle } from "@/components/theme-toggle";
@@ -102,7 +102,10 @@ interface LinkedInPostData {
   authorImage: string;
   image: string;
   videoUrl: string | null;
+  videoQuality: string;
   documentImages: string[];
+  documentPdfUrl: string | null;
+  documentPageCount: number;
   type: "video" | "image" | "document" | "text";
 }
 
@@ -405,174 +408,170 @@ export default function Home() {
                     </Tabs.Tab>
                   </Tabs.List>
 
-                  <AnimatePresence mode="wait">
-                    {/* DOWNLOAD TAB */}
-                    <Tabs.Panel value="download" pt="xl">
-                      <MotionDiv
-                        key="download"
-                        initial={{ opacity: 0, x: -20 }}
-                        animate={{ opacity: 1, x: 0 }}
-                        exit={{ opacity: 0, x: 20 }}
-                        transition={{ duration: 0.25 }}
-                      >
-                        <Container size="sm">
-                          {loading ? (
-                            <Stack gap="md">
-                              <Skeleton h={350} radius="lg" />
-                              <Skeleton h={50} radius="lg" />
-                            </Stack>
-                          ) : (
-                            <>
-                              {platform === "twitter" && (
-                                video ? (
-                                  <VideoPicker video={video} loading={false} tweetUrl={currentUrl} />
-                                ) : (
-                                  <Paper p="xl" radius="lg" withBorder ta="center">
-                                    <Text c="dimmed" size="lg">No video found in this tweet.</Text>
-                                    <Text c="dimmed" size="sm" mt="xs">
-                                      Switch to the Screenshot tab to capture the tweet.
-                                    </Text>
-                                  </Paper>
-                                )
-                              )}
-
-                              {platform === "instagram" && (
-                                <InstagramViewer data={instaData} loading={false} />
-                              )}
-
-                              {platform === "youtube" && (
-                                <YouTubeViewer data={ytData} loading={false} />
-                              )}
-
-                              {platform === "linkedin" && (
-                                <LinkedInViewer data={linkedinData} loading={false} />
-                              )}
-
-                              {platform === "universal" && pageMeta && (
-                                <Card radius="lg" withBorder p="lg">
-                                  <Stack gap="md">
-                                    {pageMeta.image && (
-                                      <Image
-                                        src={pageMeta.image}
-                                        alt={pageMeta.title}
-                                        radius="md"
-                                        fit="cover"
-                                        h={250}
-                                      />
-                                    )}
-                                    <Text fw={700} size="lg">{pageMeta.title}</Text>
-                                    {pageMeta.description && (
-                                      <Text size="sm" c="dimmed" lineClamp={4}>
-                                        {pageMeta.description}
-                                      </Text>
-                                    )}
-                                    <Group gap="sm">
-                                      {pageMeta.siteName && (
-                                        <Badge variant="light" radius="lg">{pageMeta.siteName}</Badge>
-                                      )}
-                                      {pageMeta.author && (
-                                        <Badge variant="light" color="gray" radius="lg">{pageMeta.author}</Badge>
-                                      )}
-                                    </Group>
-                                    <Text ta="center" size="sm" c="dimmed" mt="md">
-                                      Switch to the Screenshot tab to create a beautiful card.
-                                    </Text>
-                                  </Stack>
-                                </Card>
-                              )}
-
-                              {!loading && !tweet && !instaData && !ytData && !linkedinData && !pageMeta && (
+                  {/* DOWNLOAD TAB */}
+                  <Tabs.Panel value="download" pt="xl">
+                    <MotionDiv
+                      key={`download-${activeTab}`}
+                      initial={{ opacity: 0, x: -20 }}
+                      animate={{ opacity: 1, x: 0 }}
+                      transition={{ duration: 0.25 }}
+                    >
+                      <Container size="sm">
+                        {loading ? (
+                          <Stack gap="md">
+                            <Skeleton h={350} radius="lg" />
+                            <Skeleton h={50} radius="lg" />
+                          </Stack>
+                        ) : (
+                          <>
+                            {platform === "twitter" && (
+                              video ? (
+                                <VideoPicker video={video} loading={false} tweetUrl={currentUrl} />
+                              ) : (
                                 <Paper p="xl" radius="lg" withBorder ta="center">
-                                  <Text c="dimmed" size="lg">
-                                    Could not fetch content from this URL.
-                                  </Text>
+                                  <Text c="dimmed" size="lg">No video found in this tweet.</Text>
                                   <Text c="dimmed" size="sm" mt="xs">
-                                    The content may be private, deleted, or not supported.
+                                    Switch to the Screenshot tab to capture the tweet.
                                   </Text>
                                 </Paper>
-                              )}
-                            </>
-                          )}
-                        </Container>
-                      </MotionDiv>
-                    </Tabs.Panel>
+                              )
+                            )}
 
-                    {/* SCREENSHOT TAB */}
-                    <Tabs.Panel value="screenshot" pt="xl">
-                      <MotionDiv
-                        key="screenshot"
-                        initial={{ opacity: 0, x: 20 }}
-                        animate={{ opacity: 1, x: 0 }}
-                        exit={{ opacity: 0, x: -20 }}
-                        transition={{ duration: 0.25 }}
-                      >
-                        {loading ? (
-                          <Grid gutter="xl">
-                            <Grid.Col span={{ base: 12, md: 8 }}>
-                              <Skeleton h={400} radius="lg" />
-                            </Grid.Col>
-                            <Grid.Col span={{ base: 12, md: 4 }}>
-                              <Skeleton h={400} radius="lg" />
-                            </Grid.Col>
-                          </Grid>
-                        ) : canScreenshot ? (
-                          <Grid gutter="xl">
-                            <Grid.Col span={{ base: 12, md: 8 }}>
-                              <Paper radius="lg" withBorder style={{ overflow: "hidden" }}>
-                                <Box
-                                  p="md"
-                                  style={{
-                                    background:
-                                      "repeating-conic-gradient(#80808015 0% 25%, transparent 0% 50%) 50% / 20px 20px",
-                                    display: "flex",
-                                    justifyContent: "center",
-                                    alignItems: "center",
-                                    minHeight: 300,
-                                  }}
-                                >
-                                  <Box maw={650} w="100%">
-                                    {platform === "twitter" && tweet ? (
-                                      <TweetCard
-                                        ref={cardRef}
-                                        tweet={tweet}
-                                        settings={settings}
-                                      />
-                                    ) : pageMeta ? (
-                                      <ContentCard
-                                        ref={cardRef}
-                                        meta={pageMeta}
-                                        settings={settings}
-                                      />
-                                    ) : null}
-                                  </Box>
-                                </Box>
+                            {platform === "instagram" && (
+                              <InstagramViewer data={instaData} loading={false} />
+                            )}
+
+                            {platform === "youtube" && (
+                              <YouTubeViewer data={ytData} loading={false} />
+                            )}
+
+                            {platform === "linkedin" && (
+                              <LinkedInViewer data={linkedinData} loading={false} postUrl={currentUrl} />
+                            )}
+
+                            {platform === "universal" && pageMeta && (
+                              <Card radius="lg" withBorder p="lg">
+                                <Stack gap="md">
+                                  {pageMeta.image && (
+                                    <Image
+                                      src={pageMeta.image}
+                                      alt={pageMeta.title}
+                                      radius="md"
+                                      fit="cover"
+                                      h={250}
+                                    />
+                                  )}
+                                  <Text fw={700} size="lg">{pageMeta.title}</Text>
+                                  {pageMeta.description && (
+                                    <Text size="sm" c="dimmed" lineClamp={4}>
+                                      {pageMeta.description}
+                                    </Text>
+                                  )}
+                                  <Group gap="sm">
+                                    {pageMeta.siteName && (
+                                      <Badge variant="light" radius="lg">{pageMeta.siteName}</Badge>
+                                    )}
+                                    {pageMeta.author && (
+                                      <Badge variant="light" color="gray" radius="lg">{pageMeta.author}</Badge>
+                                    )}
+                                  </Group>
+                                  <Text ta="center" size="sm" c="dimmed" mt="md">
+                                    Switch to the Screenshot tab to create a beautiful card.
+                                  </Text>
+                                </Stack>
+                              </Card>
+                            )}
+
+                            {!loading && !tweet && !instaData && !ytData && !linkedinData && !pageMeta && (
+                              <Paper p="xl" radius="lg" withBorder ta="center">
+                                <Text c="dimmed" size="lg">
+                                  Could not fetch content from this URL.
+                                </Text>
+                                <Text c="dimmed" size="sm" mt="xs">
+                                  The content may be private, deleted, or not supported.
+                                </Text>
                               </Paper>
-                            </Grid.Col>
-                            <Grid.Col span={{ base: 12, md: 4 }}>
-                              <Paper radius="lg" withBorder>
-                                <ScreenshotEditor
-                                  settings={settings}
-                                  onChange={setSettings}
-                                  onExport={handleExport}
-                                  onCopy={handleCopy}
-                                  exporting={exporting}
-                                />
-                              </Paper>
-                            </Grid.Col>
-                          </Grid>
-                        ) : (
-                          <Paper p="xl" radius="lg" withBorder ta="center">
-                            <Text c="dimmed" size="lg">
-                              Screenshot not available yet.
-                            </Text>
-                            <Text c="dimmed" size="sm" mt="xs">
-                              Fetching page metadata...
-                            </Text>
-                          </Paper>
+                            )}
+                          </>
                         )}
-                      </MotionDiv>
-                    </Tabs.Panel>
-                  </AnimatePresence>
+                      </Container>
+                    </MotionDiv>
+                  </Tabs.Panel>
+
+                  {/* SCREENSHOT TAB */}
+                  <Tabs.Panel value="screenshot" pt="xl">
+                    <MotionDiv
+                      key={`screenshot-${activeTab}`}
+                      initial={{ opacity: 0, x: 20 }}
+                      animate={{ opacity: 1, x: 0 }}
+                      transition={{ duration: 0.25 }}
+                    >
+                      {loading ? (
+                        <Grid gutter="xl">
+                          <Grid.Col span={{ base: 12, md: 8 }}>
+                            <Skeleton h={400} radius="lg" />
+                          </Grid.Col>
+                          <Grid.Col span={{ base: 12, md: 4 }}>
+                            <Skeleton h={400} radius="lg" />
+                          </Grid.Col>
+                        </Grid>
+                      ) : canScreenshot ? (
+                        <Grid gutter="xl">
+                          <Grid.Col span={{ base: 12, md: 8 }}>
+                            <Paper radius="lg" withBorder style={{ overflow: "hidden" }}>
+                              <Box
+                                p="md"
+                                style={{
+                                  background:
+                                    "repeating-conic-gradient(#80808015 0% 25%, transparent 0% 50%) 50% / 20px 20px",
+                                  display: "flex",
+                                  justifyContent: "center",
+                                  alignItems: "center",
+                                  minHeight: 300,
+                                }}
+                              >
+                                <Box maw={650} w="100%">
+                                  {platform === "twitter" && tweet ? (
+                                    <TweetCard
+                                      ref={cardRef}
+                                      tweet={tweet}
+                                      settings={settings}
+                                    />
+                                  ) : pageMeta ? (
+                                    <ContentCard
+                                      ref={cardRef}
+                                      meta={pageMeta}
+                                      settings={settings}
+                                    />
+                                  ) : null}
+                                </Box>
+                              </Box>
+                            </Paper>
+                          </Grid.Col>
+                          <Grid.Col span={{ base: 12, md: 4 }}>
+                            <Paper radius="lg" withBorder>
+                              <ScreenshotEditor
+                                settings={settings}
+                                onChange={setSettings}
+                                onExport={handleExport}
+                                onCopy={handleCopy}
+                                exporting={exporting}
+                              />
+                            </Paper>
+                          </Grid.Col>
+                        </Grid>
+                      ) : (
+                        <Paper p="xl" radius="lg" withBorder ta="center">
+                          <Text c="dimmed" size="lg">
+                            Screenshot not available yet.
+                          </Text>
+                          <Text c="dimmed" size="sm" mt="xs">
+                            Fetching page metadata...
+                          </Text>
+                        </Paper>
+                      )}
+                    </MotionDiv>
+                  </Tabs.Panel>
                 </Tabs>
               </MotionDiv>
             )}

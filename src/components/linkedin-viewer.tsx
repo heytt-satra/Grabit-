@@ -22,17 +22,22 @@ interface LinkedInPostData {
   author: string;
   image: string;
   videoUrl: string | null;
+  videoQuality: string;
   documentImages: string[];
+  documentPdfUrl: string | null;
+  documentPageCount: number;
   type: "video" | "image" | "document" | "text";
 }
 
 interface Props {
   data: LinkedInPostData | null;
   loading: boolean;
+  postUrl?: string;
 }
 
-export function LinkedInViewer({ data, loading }: Props) {
+export function LinkedInViewer({ data, loading, postUrl }: Props) {
   const [downloading, setDownloading] = useState(false);
+  const authorSlug = (data?.author || "linkedin").replace(/\s+/g, "_");
 
   if (loading) {
     return (
@@ -113,6 +118,42 @@ export function LinkedInViewer({ data, loading }: Props) {
     }
   };
 
+  const handleVideoDownload = async () => {
+    if (!postUrl) return;
+
+    setDownloading(true);
+    try {
+      const response = await fetch(
+        `/api/linkedin/download?url=${encodeURIComponent(postUrl)}`
+      );
+      if (!response.ok) throw new Error("Download failed");
+
+      const blob = await response.blob();
+      const blobUrl = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = blobUrl;
+      link.download = `linkedin_${authorSlug}_video.mp4`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(blobUrl);
+
+      notifications.show({
+        title: "Downloaded!",
+        message: `linkedin_${authorSlug}_video.mp4`,
+        color: "green",
+      });
+    } catch {
+      notifications.show({
+        title: "Download failed",
+        message: "Please try again",
+        color: "red",
+      });
+    } finally {
+      setDownloading(false);
+    }
+  };
+
   return (
     <Card radius="lg" withBorder p="lg">
       <Stack gap="lg">
@@ -124,6 +165,16 @@ export function LinkedInViewer({ data, loading }: Props) {
           <Badge variant="light" color="gray" radius="lg">
             {data.type}
           </Badge>
+          {data.type === "video" && data.videoQuality && (
+            <Badge variant="light" color="green" radius="lg">
+              {data.videoQuality}
+            </Badge>
+          )}
+          {data.type === "document" && data.documentPageCount > 0 && (
+            <Badge variant="light" color="indigo" radius="lg">
+              {data.documentPageCount} pages
+            </Badge>
+          )}
         </Group>
 
         {data.title && (
@@ -136,7 +187,11 @@ export function LinkedInViewer({ data, loading }: Props) {
         {data.type === "video" && data.videoUrl && (
           <Paper radius="md" style={{ overflow: "hidden" }}>
             <video
-              src={`/api/download?url=${encodeURIComponent(data.videoUrl)}&filename=preview.mp4`}
+              src={
+                postUrl
+                  ? `/api/linkedin/download?url=${encodeURIComponent(postUrl)}`
+                  : `/api/download?url=${encodeURIComponent(data.videoUrl)}&filename=preview.mp4`
+              }
               controls
               style={{ width: "100%", maxHeight: 450, background: "#000" }}
               poster={data.image}
@@ -209,10 +264,10 @@ export function LinkedInViewer({ data, loading }: Props) {
               size="lg"
               radius="xl"
               fullWidth
-              onClick={() =>
+              onClick={postUrl ? handleVideoDownload : () =>
                 handleDownload(
                   data.videoUrl!,
-                  `linkedin_${data.author.replace(/\s+/g, "_")}_video.mp4`
+                  `linkedin_${authorSlug}_video.mp4`
                 )
               }
               loading={downloading}
@@ -224,7 +279,7 @@ export function LinkedInViewer({ data, loading }: Props) {
                 </svg>
               }
             >
-              Download Video
+              {data.videoQuality ? `Download Video (${data.videoQuality})` : "Download Video"}
             </Button>
           )}
           {data.type === "image" && data.image && (
@@ -235,25 +290,43 @@ export function LinkedInViewer({ data, loading }: Props) {
               onClick={() =>
                 handleDownload(
                   data.image,
-                  `linkedin_${data.author.replace(/\s+/g, "_")}_image.jpg`
+                  `linkedin_${authorSlug}_image.jpg`
                 )
               }
               loading={downloading}
             >
-              Download Image
+              Download Image (HQ)
             </Button>
           )}
           {data.type === "document" && data.documentImages.length > 0 && (
-            <Button
-              size="lg"
-              radius="xl"
-              fullWidth
-              variant="light"
-              onClick={handleDocumentDownload}
-              loading={downloading}
-            >
-              Download Slides (ZIP)
-            </Button>
+            <>
+              {data.documentPdfUrl && (
+                <Button
+                  size="lg"
+                  radius="xl"
+                  fullWidth
+                  onClick={() =>
+                    handleDownload(
+                      data.documentPdfUrl!,
+                      `linkedin_${authorSlug}_document.pdf`
+                    )
+                  }
+                  loading={downloading}
+                >
+                  Download PDF
+                </Button>
+              )}
+              <Button
+                size="lg"
+                radius="xl"
+                fullWidth
+                variant="light"
+                onClick={handleDocumentDownload}
+                loading={downloading}
+              >
+                Download Pages (ZIP)
+              </Button>
+            </>
           )}
           {data.type === "text" && (
             <Text ta="center" size="sm" c="dimmed">

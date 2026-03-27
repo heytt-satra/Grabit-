@@ -9,7 +9,10 @@ export interface LinkedInPostData {
   authorImage: string;
   image: string;
   videoUrl: string | null;
+  videoQuality: string;
   documentImages: string[];
+  documentPdfUrl: string | null;
+  documentPageCount: number;
   type: "video" | "image" | "document" | "text";
 }
 
@@ -19,6 +22,12 @@ interface LinkedInSchemaImage {
 
 interface LinkedInSchemaPerson {
   name?: string;
+  image?: LinkedInSchemaImage;
+}
+
+interface LinkedInSchemaMediaObject {
+  contentUrl?: string;
+  encodingFormat?: string;
 }
 
 interface LinkedInSchema {
@@ -26,13 +35,80 @@ interface LinkedInSchema {
   articleBody?: string;
   image?: LinkedInSchemaImage;
   author?: LinkedInSchemaPerson;
+  contentUrl?: string;
+  caption?: LinkedInSchemaMediaObject;
+}
+
+interface LinkedInDocumentCoverPage {
+  type?: string;
+  config?: {
+    src?: string;
+  };
+}
+
+interface LinkedInNativeDocumentConfig {
+  doc?: {
+    authorTitle?: string;
+    title?: string;
+    totalPageCount?: number;
+    manifestUrl?: string;
+    url?: string;
+    coverPages?: LinkedInDocumentCoverPage[];
+  };
+}
+
+interface LinkedInDocumentManifestResolution {
+  width?: number;
+  height?: number;
+  imageManifestUrl?: string;
+}
+
+interface LinkedInDocumentManifest {
+  transcribedDocumentUrl?: string;
+  perResolutions?: LinkedInDocumentManifestResolution[];
+}
+
+interface LinkedInDocumentImageManifest {
+  pages?: string[];
+}
+
+interface LinkedInDocumentAssets {
+  images: string[];
+  pdfUrl: string | null;
+  pageCount: number;
+}
+
+interface LinkedInVideoCandidate {
+  url: string;
+  quality: string;
+  height: number;
+}
+
+interface LinkedInVideoSource {
+  src?: string;
+  type?: string;
 }
 
 const UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
+const PRIMARY_MEDIA_SCAN_LIMIT = 120_000;
 
 function decodeHtml(value: string): string {
   return cheerio.load(`<div>${value}</div>`)("div").text().trim();
+}
+
+function decodeHtmlAttribute(value: string): string {
+  return value
+    .replace(/&quot;/g, '"')
+    .replace(/&#34;/g, '"')
+    .replace(/&amp;/g, "&")
+    .replace(/&apos;/g, "'")
+    .replace(/&#39;/g, "'")
+    .replace(/&#x2F;/g, "/")
+    .replace(/&#47;/g, "/")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .trim();
 }
 
 function parseJsonLd($: cheerio.CheerioAPI): LinkedInSchema | null {
@@ -54,45 +130,218 @@ function parseJsonLd($: cheerio.CheerioAPI): LinkedInSchema | null {
   return null;
 }
 
-function collectDocumentImages($: cheerio.CheerioAPI): string[] {
-  const images = new Set<string>();
-
-  $("img").each((_, element) => {
-    const src = $(element).attr("src") || $(element).attr("data-delayed-url") || "";
-    const decoded = decodeHtml(src);
-
-    if (!decoded.includes("/dms/image/")) return;
-    if (/profile-displayphoto|company-logo|logo|icon|favicon/i.test(decoded)) return;
-
-    images.add(decoded);
-  });
-
-  return Array.from(images);
+function getPrimaryMediaHtml(html: string): string {
+  return html.slice(0, PRIMARY_MEDIA_SCAN_LIMIT);
 }
 
-function extractVideoUrl($: cheerio.CheerioAPI, html: string): string | null {
-  const metaVideo =
-    $('meta[property="og:video"]').attr("content") ||
-    $('meta[property="og:video:url"]').attr("content");
+function getImageArea(url: string): number {
+  const match = url.match(/_(\d{2,5})(?:_(\d{2,5}))?(?=[/?&]|$)/);
+  if (!match) return 0;
 
-  if (metaVideo) {
-    return decodeHtml(metaVideo);
+  const width = Number(match[1] || 0);
+  const height = Number(match[2] || match[1] || 0);
+  return width * height;
+}
+
+function pickBestImageUrl(...candidates: Array<string | null | undefined>): string {
+  return candidates
+    .map((candidate) => decodeHtmlAttribute(candidate || ""))
+    .filter(Boolean)
+    .sort((left, right) => getImageArea(right) - getImageArea(left))[0] || "";
+}
+
+function parseNativeDocumentConfig(html: string): LinkedInNativeDocumentConfig | null {
+  const primaryHtml = getPrimaryMediaHtml(html);
+  const match = primaryHtml.match(/data-native-document-config="([^"]+)"/);
+
+  if (!match?.[1]) return null;
+
+  try {
+    return JSON.parse(decodeHtmlAttribute(match[1])) as LinkedInNativeDocumentConfig;
+  } catch {
+    return null;
   }
+}
 
-  const patterns = [
-    /"contentUrl"\s*:\s*"([^"]+\.mp4[^"]*)"/,
-    /"progressiveUrl"\s*:\s*"([^"]+\.mp4[^"]*)"/,
-    /"streamingUrl"\s*:\s*"([^"]+\.mp4[^"]*)"/,
-  ];
+async function fetchJson<T>(url: string): Promise<T | null> {
+  const response = await fetch(url, {
+    headers: {
+      "User-Agent": UA,
+      Accept: "application/json,text/plain,*/*",
+      Referer: "https://www.linkedin.com/",
+    },
+    redirect: "follow",
+  });
 
-  for (const pattern of patterns) {
-    const match = html.match(pattern);
-    if (match?.[1]) {
-      return decodeHtml(match[1]);
+  if (!response.ok) return null;
+  return (await response.json()) as T;
+}
+
+async function resolveDocumentAssets(
+  config: LinkedInNativeDocumentConfig | null
+): Promise<LinkedInDocumentAssets> {
+  const coverImages =
+    config?.doc?.coverPages
+      ?.map((page) => decodeHtmlAttribute(page.config?.src || ""))
+      .filter(Boolean) || [];
+  const manifestUrl = decodeHtmlAttribute(config?.doc?.manifestUrl || config?.doc?.url || "");
+  const manifest = manifestUrl
+    ? await fetchJson<LinkedInDocumentManifest>(manifestUrl)
+    : null;
+
+  const bestResolution = manifest?.perResolutions
+    ?.filter((resolution) => !!resolution.imageManifestUrl)
+    .sort(
+      (left, right) =>
+        (right.width || 0) * (right.height || 0) -
+        (left.width || 0) * (left.height || 0)
+    )[0];
+  const imageManifestUrl = decodeHtmlAttribute(bestResolution?.imageManifestUrl || "");
+  const imageManifest = imageManifestUrl
+    ? await fetchJson<LinkedInDocumentImageManifest>(imageManifestUrl)
+    : null;
+  const images =
+    imageManifest?.pages?.map((page) => decodeHtmlAttribute(page)).filter(Boolean) ||
+    coverImages;
+
+  return {
+    images,
+    pdfUrl: decodeHtmlAttribute(manifest?.transcribedDocumentUrl || ""),
+    pageCount: Number(config?.doc?.totalPageCount || images.length || coverImages.length || 0),
+  };
+}
+
+function extractVideoCandidates(
+  $: cheerio.CheerioAPI,
+  schema: LinkedInSchema | null,
+  html: string
+): LinkedInVideoCandidate[] {
+  const primaryHtml = getPrimaryMediaHtml(html);
+  const urls = new Set<string>();
+  const videoSources = $('video[data-sources]').first().attr("data-sources");
+
+  if (videoSources) {
+    try {
+      const parsedSources = JSON.parse(videoSources) as LinkedInVideoSource[];
+      for (const source of parsedSources) {
+        if (source.src && /\.mp4/i.test(source.src)) {
+          urls.add(source.src);
+        }
+      }
+    } catch {
+      // Fall through to regex-based extraction.
     }
   }
 
-  return null;
+  if (schema?.contentUrl && /\.mp4/i.test(schema.contentUrl)) {
+    urls.add(decodeHtmlAttribute(schema.contentUrl));
+  }
+
+  const metaVideo =
+    $('meta[property="og:video"]').attr("content") ||
+    $('meta[property="og:video:url"]').attr("content");
+  if (metaVideo && /\.mp4/i.test(metaVideo)) {
+    urls.add(decodeHtmlAttribute(metaVideo));
+  }
+
+  for (const match of primaryHtml.matchAll(/https:\/\/dms\.licdn\.com\/playlist\/vid\/v2\/[^"'\\s<]+?mp4-(\d+)p[^"'\\s<]*/g)) {
+    urls.add(decodeHtmlAttribute(match[0]));
+  }
+
+  return Array.from(urls)
+    .map((url) => {
+      const height = Number(url.match(/mp4-(\d+)p/i)?.[1] || 0);
+      return {
+        url,
+        quality: height > 0 ? `${height}p` : "MP4",
+        height,
+      };
+    })
+    .sort((left, right) => right.height - left.height);
+}
+
+function getVideoPoster($: cheerio.CheerioAPI, schema: LinkedInSchema | null, ogImage: string): string {
+  return pickBestImageUrl(
+    $('video[data-poster-url]').first().attr("data-poster-url"),
+    schema?.image?.url,
+    ogImage
+  );
+}
+
+function getAuthorName(schema: LinkedInSchema | null, ogTitle: string, documentConfig: LinkedInNativeDocumentConfig | null): string {
+  const headlineAuthor =
+    schema?.headline?.match(/\|\s*([^|]+?)\s*\|\s*\d+\s+comments?/i)?.[1] || "";
+  const ogTitleAuthor =
+    decodeHtmlAttribute(ogTitle).match(/\|\s*([^|]+?)\s*\|\s*\d+\s+comments?/i)?.[1] || "";
+
+  return (
+    schema?.author?.name ||
+    documentConfig?.doc?.authorTitle ||
+    headlineAuthor ||
+    ogTitleAuthor ||
+    decodeHtml(
+      ogTitle.match(/^(.+?)(?:\s+\|\s+.+LinkedIn| posted on the topic)/)?.[1] || ""
+    )
+  );
+}
+
+function getAuthorImage(schema: LinkedInSchema | null): string {
+  return decodeHtmlAttribute(schema?.author?.image?.url || "");
+}
+
+function getPrimaryImage(schema: LinkedInSchema | null, ogImage: string): string {
+  return pickBestImageUrl(schema?.image?.url, ogImage);
+}
+
+function getDocumentPreviewImage(documentAssets: LinkedInDocumentAssets): string {
+  return documentAssets.images[0] || "";
+}
+
+function getDocumentTitle(
+  schema: LinkedInSchema | null,
+  ogTitle: string,
+  documentConfig: LinkedInNativeDocumentConfig | null
+): string {
+  return documentConfig?.doc?.title || schema?.headline || ogTitle;
+}
+
+function getDocumentPdfUrl(documentAssets: LinkedInDocumentAssets): string | null {
+  return documentAssets.pdfUrl || null;
+}
+
+function getDocumentPageCount(documentAssets: LinkedInDocumentAssets): number {
+  return documentAssets.pageCount || documentAssets.images.length;
+}
+
+function getDocumentImages(documentAssets: LinkedInDocumentAssets): string[] {
+  return documentAssets.images;
+}
+
+function getVideoData(
+  $: cheerio.CheerioAPI,
+  schema: LinkedInSchema | null,
+  html: string,
+  ogImage: string
+): { url: string | null; quality: string; poster: string } {
+  const candidates = extractVideoCandidates($, schema, html);
+  const bestVideo = candidates[0];
+
+  return {
+    url: bestVideo?.url || null,
+    quality: bestVideo?.quality || "",
+    poster: getVideoPoster($, schema, ogImage),
+  };
+}
+
+function getPostType(
+  documentAssets: LinkedInDocumentAssets,
+  videoUrl: string | null,
+  image: string
+): LinkedInPostData["type"] {
+  if (documentAssets.pdfUrl || documentAssets.images.length > 0) return "document";
+  if (videoUrl) return "video";
+  if (image) return "image";
+  return "text";
 }
 
 async function fetchLinkedInData(url: string): Promise<LinkedInPostData> {
@@ -118,37 +367,43 @@ async function fetchLinkedInData(url: string): Promise<LinkedInPostData> {
   const html = await response.text();
   const $ = cheerio.load(html);
   const schema = parseJsonLd($);
+  const documentConfig = parseNativeDocumentConfig(html);
+  const documentAssets = await resolveDocumentAssets(documentConfig);
 
   const ogTitle = decodeHtml($('meta[property="og:title"]').attr("content") || "");
   const ogDescription = decodeHtml(
     $('meta[property="og:description"]').attr("content") || ""
   );
-  const ogImage = decodeHtml($('meta[property="og:image"]').attr("content") || "");
-
-  const title = schema?.headline || ogTitle;
+  const ogImage = decodeHtmlAttribute($('meta[property="og:image"]').attr("content") || "");
+  const videoData = getVideoData($, schema, html, ogImage);
+  const previewImage =
+    getPrimaryImage(schema, ogImage) ||
+    videoData.poster ||
+    getDocumentPreviewImage(documentAssets);
+  const type = getPostType(documentAssets, videoData.url, previewImage);
+  const image =
+    type === "document"
+      ? getDocumentPreviewImage(documentAssets) || previewImage
+      : previewImage;
+  const title =
+    type === "document"
+      ? getDocumentTitle(schema, ogTitle, documentConfig)
+      : schema?.headline || ogTitle;
   const description = schema?.articleBody || ogDescription;
-  const author =
-    schema?.author?.name ||
-    decodeHtml(
-      ogTitle.match(/^(.+?)(?:\s+\|\s+.+LinkedIn| posted on the topic)/)?.[1] || ""
-    );
-  const image = schema?.image?.url || ogImage;
-  const documentImages = collectDocumentImages($);
-  const videoUrl = extractVideoUrl($, html);
-
-  let type: LinkedInPostData["type"] = "text";
-  if (videoUrl) type = "video";
-  else if (documentImages.length > 1) type = "document";
-  else if (image) type = "image";
+  const author = getAuthorName(schema, ogTitle, documentConfig);
+  const authorImage = getAuthorImage(schema);
 
   return {
     title,
     description,
     author,
-    authorImage: "",
+    authorImage,
     image,
-    videoUrl,
-    documentImages,
+    videoUrl: videoData.url,
+    videoQuality: videoData.quality,
+    documentImages: getDocumentImages(documentAssets),
+    documentPdfUrl: getDocumentPdfUrl(documentAssets),
+    documentPageCount: getDocumentPageCount(documentAssets),
     type,
   };
 }
