@@ -1,0 +1,8 @@
+node_modules
+.next
+.claude
+*.log
+.next-start.out.log
+.next-start.err.log
+.env
+.env.local
