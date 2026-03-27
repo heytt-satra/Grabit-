@@ -6,3 +6,5 @@ node_modules
 .next-start.err.log
 .env
 .env.local
+
+.vercel

@@ -1,39 +1,5 @@
-import youtubedl from "youtube-dl-exec";
+import ytdl from "@distube/ytdl-core";
 import { extractYouTubeId, sanitizeFilename } from "@/lib/platforms";
-
-interface YTDlpThumbnail {
-  url: string;
-  width?: number;
-  height?: number;
-}
-
-interface YTDlpFormat {
-  format_id: string;
-  format_note?: string;
-  format?: string;
-  ext?: string;
-  container?: string;
-  filesize?: number;
-  filesize_approx?: number;
-  width?: number;
-  height?: number;
-  fps?: number;
-  tbr?: number;
-  acodec?: string;
-  vcodec?: string;
-}
-
-interface YTDlpInfo {
-  id: string;
-  title: string;
-  uploader?: string;
-  uploader_url?: string;
-  description?: string;
-  duration?: number;
-  view_count?: number;
-  thumbnails?: YTDlpThumbnail[];
-  formats: YTDlpFormat[];
-}
 
 export interface YTFormat {
   itag: string;
@@ -88,34 +54,22 @@ function formatDuration(seconds?: number): string {
   return `${minutes}:${String(remainingSeconds).padStart(2, "0")}`;
 }
 
-function buildQualityLabel(format: YTDlpFormat): string {
-  if (format.format_note) return format.format_note;
+function buildQualityLabel(format: ytdl.videoFormat): string {
+  if (format.qualityLabel) return format.qualityLabel;
 
   if (format.height) {
     const fpsSuffix = format.fps && format.fps > 30 ? `${format.fps}` : "";
     return `${format.height}p${fpsSuffix}`;
   }
 
-  return format.format || format.format_id;
-}
-
-function buildMimeType(format: YTDlpFormat): string {
-  const mediaKind =
-    format.vcodec && format.vcodec !== "none" ? "video" : "audio";
-  const codecs = [format.vcodec, format.acodec]
-    .filter((codec) => codec && codec !== "none")
-    .join(", ");
-
-  return codecs
-    ? `${mediaKind}/${format.ext}; codecs="${codecs}"`
-    : `${mediaKind}/${format.ext || "mp4"}`;
+  return format.quality || String(format.itag);
 }
 
 function normalizeThumbnails(
   videoId: string,
-  thumbnails: YTDlpThumbnail[] | undefined
+  thumbnails: ytdl.thumbnail[] | undefined
 ): YTThumbnail[] {
-  const fallback = [
+  const fallback: YTThumbnail[] = [
     {
       quality: "Max Resolution",
       url: `https://img.youtube.com/vi/${videoId}/maxresdefault.jpg`,
@@ -165,35 +119,33 @@ function normalizeThumbnails(
   return unique.length > 0 ? unique : fallback;
 }
 
-function selectFormats(info: YTDlpInfo): YTFormat[] {
-  const mp4Formats = info.formats.filter(
-    (format) => format.ext === "mp4" && format.vcodec && format.vcodec !== "none"
+function selectFormats(formats: ytdl.videoFormat[]): YTFormat[] {
+  // Filter to video-containing formats
+  const videoFormats = formats.filter(
+    (format) =>
+      format.hasVideo &&
+      format.container === "mp4"
   );
+
   const candidateFormats =
-    mp4Formats.length > 0
-      ? mp4Formats
-      : info.formats.filter(
-          (format) => !!format.ext && format.vcodec && format.vcodec !== "none"
-        );
+    videoFormats.length > 0
+      ? videoFormats
+      : formats.filter((format) => format.hasVideo);
 
   const mapped = candidateFormats.map<YTFormat>((format) => ({
-    itag: format.format_id,
+    itag: String(format.itag),
     quality: buildQualityLabel(format),
     qualityLabel: buildQualityLabel(format),
-    mimeType: buildMimeType(format),
-    bitrate: Math.round((format.tbr || 0) * 1000),
+    mimeType: format.mimeType || `video/${format.container || "mp4"}`,
+    bitrate: format.bitrate || 0,
     width: format.width,
     height: format.height,
     fps: format.fps,
-    hasAudio: !!format.acodec && format.acodec !== "none",
-    hasVideo: !!format.vcodec && format.vcodec !== "none",
-    contentLength: String(format.filesize || format.filesize_approx || ""),
-    container: format.ext || "mp4",
-    isMuxed:
-      !!format.acodec &&
-      format.acodec !== "none" &&
-      !!format.vcodec &&
-      format.vcodec !== "none",
+    hasAudio: format.hasAudio,
+    hasVideo: format.hasVideo,
+    contentLength: format.contentLength || "",
+    container: format.container || "mp4",
+    isMuxed: format.hasAudio && format.hasVideo,
   }));
 
   const deduped = mapped
@@ -205,7 +157,7 @@ function selectFormats(info: YTDlpInfo): YTFormat[] {
       if (fpsDelta !== 0) return fpsDelta;
 
       if (left.isMuxed !== right.isMuxed) {
-        return left.isMuxed ? 1 : -1;
+        return left.isMuxed ? -1 : 1;
       }
 
       return right.bitrate - left.bitrate;
@@ -230,24 +182,11 @@ export async function fetchYouTubeInfo(url: string): Promise<YTVideoInfo> {
     throw new Error("Invalid YouTube URL");
   }
 
-  let info: YTDlpInfo;
+  let info: ytdl.videoInfo;
 
   try {
-    info = (await youtubedl(url, {
-      dumpSingleJson: true,
-      noWarnings: true,
-      noCheckCertificates: true,
-      skipDownload: true,
-      noPlaylist: true,
-    })) as YTDlpInfo;
+    info = await ytdl.getInfo(`https://www.youtube.com/watch?v=${videoId}`);
   } catch (error) {
-    const stderr =
-      typeof error === "object" &&
-      error !== null &&
-      "stderr" in error &&
-      typeof (error as { stderr?: unknown }).stderr === "string"
-        ? (error as { stderr: string }).stderr.trim()
-        : "";
     const message =
       error instanceof Error
         ? error.message.trim()
@@ -255,36 +194,41 @@ export async function fetchYouTubeInfo(url: string): Promise<YTVideoInfo> {
           ? error.trim()
           : "";
 
-    throw new Error(message || stderr || "Failed to extract YouTube formats");
+    throw new Error(message || "Failed to extract YouTube formats");
   }
 
-  const thumbnails = normalizeThumbnails(videoId, info.thumbnails);
-  const formats = selectFormats(info);
+  const details = info.videoDetails;
+  const thumbnails = normalizeThumbnails(videoId, details.thumbnails);
+  const formats = selectFormats(info.formats);
 
   return {
-    id: info.id || videoId,
-    title: info.title,
-    author: info.uploader || "",
-    authorUrl: info.uploader_url || "",
-    thumbnail: thumbnails[0]?.url || `https://img.youtube.com/vi/${videoId}/maxresdefault.jpg`,
-    duration: formatDuration(info.duration),
-    viewCount: String(info.view_count || ""),
-    description: info.description || "",
+    id: details.videoId || videoId,
+    title: details.title,
+    author: details.author?.name || "",
+    authorUrl: details.author?.channel_url || "",
+    thumbnail:
+      thumbnails[0]?.url ||
+      `https://img.youtube.com/vi/${videoId}/maxresdefault.jpg`,
+    duration: formatDuration(Number(details.lengthSeconds) || 0),
+    viewCount: details.viewCount || "",
+    description: details.description || "",
     formats,
     thumbnails,
   };
 }
 
-export function buildYouTubeDownloadSelector(format: YTFormat): string {
-  if (format.isMuxed) {
-    return format.itag;
-  }
-
-  if (format.container === "mp4") {
-    return `${format.itag}+bestaudio[ext=m4a]/${format.itag}+bestaudio`;
-  }
-
-  return `${format.itag}+bestaudio/${format.itag}`;
+/**
+ * Get a readable download stream for a YouTube video.
+ * Uses @distube/ytdl-core — pure Node.js, no Python required.
+ */
+export function getYouTubeDownloadStream(
+  url: string,
+  itag: number
+): NodeJS.ReadableStream {
+  return ytdl(url, {
+    quality: itag,
+    highWaterMark: 1 << 25, // 32MB buffer for smoother streaming
+  });
 }
 
 export function buildYouTubeFilename(title: string, format: YTFormat): string {

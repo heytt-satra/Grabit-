@@ -1,11 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { Readable } from "node:stream";
-import ffmpegPath from "ffmpeg-static";
-import youtubedl from "youtube-dl-exec";
 import {
-  buildYouTubeDownloadSelector,
   buildYouTubeFilename,
   fetchYouTubeInfo,
+  getYouTubeDownloadStream,
 } from "@/lib/youtube";
 
 export const runtime = "nodejs";
@@ -20,7 +18,9 @@ export async function GET(request: NextRequest) {
 
   try {
     const info = await fetchYouTubeInfo(url);
-    const format = info.formats.find((candidate) => candidate.itag === itag) || info.formats[0];
+    const format =
+      info.formats.find((candidate) => candidate.itag === itag) ||
+      info.formats[0];
 
     if (!format) {
       return NextResponse.json(
@@ -29,36 +29,13 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    if (!format.isMuxed && !ffmpegPath) {
-      return NextResponse.json(
-        { error: "FFmpeg is required to merge the selected YouTube format" },
-        { status: 500 }
-      );
-    }
-
-    const downloadProcess = youtubedl.exec(
-      url,
-      {
-        format: buildYouTubeDownloadSelector(format),
-        output: "-",
-        noWarnings: true,
-        noCheckCertificates: true,
-        noPlaylist: true,
-        mergeOutputFormat: format.container || "mp4",
-        ffmpegLocation: ffmpegPath || undefined,
-      },
-      {
-        windowsHide: true,
-      }
-    );
+    const stream = getYouTubeDownloadStream(url, Number(format.itag));
 
     request.signal.addEventListener("abort", () => {
-      downloadProcess.kill();
+      if ("destroy" in stream && typeof stream.destroy === "function") {
+        stream.destroy();
+      }
     });
-
-    if (!downloadProcess.stdout) {
-      throw new Error("YouTube download stream did not start");
-    }
 
     const headers = new Headers({
       "Content-Type":
@@ -70,8 +47,12 @@ export async function GET(request: NextRequest) {
       "Cache-Control": "no-store",
     });
 
+    if (format.contentLength) {
+      headers.set("Content-Length", format.contentLength);
+    }
+
     return new NextResponse(
-      Readable.toWeb(downloadProcess.stdout) as ReadableStream,
+      Readable.toWeb(Readable.from(stream)) as ReadableStream,
       {
         status: 200,
         headers,
