@@ -8,11 +8,6 @@ const nextConfig: NextConfig = {
       { protocol: "https", hostname: "video.twimg.com" },
     ],
   },
-  outputFileTracingIncludes: {
-    "/api/youtube/download": [
-      "./node_modules/ffmpeg-static/ffmpeg*",
-    ],
-  },
 };
 
 export default nextConfig;

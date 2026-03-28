@@ -14,7 +14,7 @@ interface UrlInputProps {
 export function UrlInput({
   onSubmit,
   loading = false,
-  placeholder = "Paste any URL - Twitter, Instagram, YouTube, or any website...",
+  placeholder = "Paste any URL - Twitter, Instagram, or any website...",
 }: UrlInputProps) {
   const [url, setUrl] = useState("");
   const [error, setError] = useState("");
@@ -86,7 +86,7 @@ export function UrlInput({
             <PlatformBadge platform={detectedPlatform} />
           ) : (
             <Text size="xs" c="dimmed">
-              Supports X, Instagram, YouTube, and any website
+              Supports X, Instagram, and any website
             </Text>
           )}
         </Group>

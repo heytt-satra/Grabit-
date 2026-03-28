@@ -11,7 +11,7 @@ import "./globals.css";
 export const metadata: Metadata = {
   title: "GrabIt - Download Videos & Screenshot Any Content",
   description:
-    "Download videos from X, Instagram, and YouTube. Create beautiful screenshots of any content. Free, no login required.",
+    "Download videos from X and Instagram. Create beautiful screenshots of any content. Free, no login required.",
 };
 
 export default function RootLayout({

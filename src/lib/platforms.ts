@@ -1,4 +1,4 @@
-export type Platform = "twitter" | "instagram" | "youtube" | "universal";
+export type Platform = "twitter" | "instagram" | "universal";
 
 export interface PlatformInfo {
   platform: Platform;
@@ -20,12 +20,6 @@ const PLATFORM_MAP: Record<Platform, PlatformInfo> = {
     color: "#E1306C",
     icon: "instagram",
   },
-  youtube: {
-    platform: "youtube",
-    label: "YouTube",
-    color: "#FF0000",
-    icon: "youtube",
-  },
   universal: {
     platform: "universal",
     label: "Screenshot",
@@ -38,7 +32,6 @@ export function detectPlatform(url: string): Platform {
   const u = url.toLowerCase().trim();
   if (/^https?:\/\/(www\.)?(twitter\.com|x\.com)\//.test(u)) return "twitter";
   if (/^https?:\/\/(www\.)?instagram\.com\//.test(u)) return "instagram";
-  if (/^https?:\/\/(www\.)?(youtube\.com|youtu\.be)\//.test(u)) return "youtube";
   return "universal";
 }
 
@@ -105,24 +98,6 @@ export function normalizeInstagramUrl(url: string): string | null {
       : "p";
 
   return `https://www.instagram.com/${normalizedType}/${shortcode}/`;
-}
-
-export function extractYouTubeId(url: string): string | null {
-  const patterns = [
-    /(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/|youtube\.com\/shorts\/)([A-Za-z0-9_-]{11})/,
-    /youtube\.com\/.*[?&]v=([A-Za-z0-9_-]{11})/,
-  ];
-
-  for (const pattern of patterns) {
-    const match = url.match(pattern);
-    if (match) return match[1];
-  }
-
-  return null;
-}
-
-export function isYouTubeShorts(url: string): boolean {
-  return /youtube\.com\/shorts\//.test(url);
 }
 
 export function isValidUrl(url: string): boolean {
