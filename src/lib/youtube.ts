@@ -76,40 +76,46 @@ interface RawVideoInfo {
   formats: RawFormat[];
 }
 
-interface RawYtDlpThumbnail {
-  url?: string;
+interface YtdlCoreFormat {
+  itag: number;
+  url: string;
+  mimeType?: string;
+  bitrate?: number;
+  qualityLabel?: string;
+  quality?: string;
   width?: number;
   height?: number;
-}
-
-interface RawYtDlpFormat {
-  format_id: string;
-  url?: string;
-  ext?: string;
-  acodec?: string;
-  vcodec?: string;
-  format_note?: string;
-  height?: number;
-  width?: number;
   fps?: number;
-  tbr?: number;
-  filesize?: number | null;
-  filesize_approx?: number | null;
+  contentLength?: string;
+  hasAudio: boolean;
+  hasVideo: boolean;
+  container: string;
+  audioBitrate?: number;
 }
 
-interface RawYtDlpVideoInfo {
+interface YtdlCoreThumbnail {
+  url: string;
+  width: number;
+  height: number;
+}
+
+interface YtdlCoreAuthor {
   id: string;
-  title?: string;
-  uploader?: string;
-  uploader_url?: string;
-  channel?: string;
-  channel_url?: string;
-  thumbnail?: string;
-  thumbnails?: RawYtDlpThumbnail[];
-  duration?: number;
-  view_count?: number;
-  description?: string;
-  formats?: RawYtDlpFormat[];
+  name: string;
+  channel_url: string;
+}
+
+export interface YtdlCoreVideoInfo {
+  videoDetails: {
+    videoId: string;
+    title: string;
+    description: string | null;
+    lengthSeconds: string;
+    viewCount: string;
+    author: YtdlCoreAuthor;
+    thumbnails: YtdlCoreThumbnail[];
+  };
+  formats: YtdlCoreFormat[];
 }
 
 const SOURCE_CLIENT_ORDER: Record<string, number> = {
@@ -122,7 +128,7 @@ const SOURCE_CLIENT_ORDER: Record<string, number> = {
   webCreator: 6,
   webEmbedded: 7,
   unknown: 8,
-  "yt-dlp": 9,
+  "ytdl-core": 9,
 };
 
 function formatDuration(seconds?: number): string {
@@ -275,38 +281,38 @@ function normalizeFormats(rawFormats: RawFormat[]): YTFormat[] {
   );
 }
 
-function normalizeYtDlpFormats(rawFormats: RawYtDlpFormat[]): YTFormat[] {
+function normalizeYtdlCoreFormats(rawFormats: YtdlCoreFormat[]): YTFormat[] {
   return dedupeFormats(
     rawFormats
       .filter(
         (format) =>
-          format.vcodec !== "none" &&
+          format.hasVideo &&
           !!format.url &&
           !!format.height &&
           format.height > 0
       )
       .map<YTFormat>((format) => {
-        const container = format.ext || "mp4";
+        const container = format.container || "mp4";
         const qualityLabel =
-          format.format_note ||
-          (format.height ? `${format.height}p` : format.format_id);
+          format.qualityLabel ||
+          (format.height ? `${format.height}p` : String(format.itag));
 
         return {
-          itag: format.format_id,
-          url: format.url || "",
+          itag: String(format.itag),
+          url: format.url,
           quality: qualityLabel,
           qualityLabel,
-          mimeType: `video/${container}`,
-          bitrate: Math.round((format.tbr || 0) * 1000),
+          mimeType: format.mimeType || `video/${container}`,
+          bitrate: format.bitrate || 0,
           width: format.width,
           height: format.height,
           fps: format.fps,
-          hasAudio: format.acodec !== "none",
-          hasVideo: format.vcodec !== "none",
-          contentLength: String(format.filesize || format.filesize_approx || ""),
+          hasAudio: format.hasAudio,
+          hasVideo: format.hasVideo,
+          contentLength: format.contentLength || "",
           container,
-          isMuxed: format.acodec !== "none" && format.vcodec !== "none",
-          sourceClientName: "yt-dlp",
+          isMuxed: format.hasAudio && format.hasVideo,
+          sourceClientName: "ytdl-core",
         };
       })
       .sort(sortFormats)
@@ -314,65 +320,64 @@ function normalizeYtDlpFormats(rawFormats: RawYtDlpFormat[]): YTFormat[] {
 }
 
 export function normalizeYouTubeInfo(
-  info: RawVideoInfo | RawYtDlpVideoInfo
+  info: RawVideoInfo | YtdlCoreVideoInfo
 ): YTVideoInfo {
   if ("videoDetails" in info) {
     const videoId = info.videoDetails.videoId;
     const thumbnails = normalizeThumbnails(videoId, info.videoDetails.thumbnails);
-    const formats = normalizeFormats(info.formats || []);
+
+    const isYtdlCore = info.formats.length > 0 && "hasVideo" in info.formats[0];
+    const formats = isYtdlCore
+      ? normalizeYtdlCoreFormats(info.formats as unknown as YtdlCoreFormat[])
+      : normalizeFormats(info.formats as unknown as RawFormat[]);
 
     if (formats.length === 0) {
       throw new Error("No playable YouTube formats were returned for this video");
     }
 
+    const author =
+      typeof info.videoDetails.author === "object" && info.videoDetails.author !== null
+        ? (info.videoDetails.author as YtdlCoreAuthor).name ||
+          (info.videoDetails.author as { name?: string }).name ||
+          ""
+        : String(info.videoDetails.author || "");
+
+    const authorUrl =
+      typeof info.videoDetails.author === "object" && info.videoDetails.author !== null
+        ? (info.videoDetails.author as YtdlCoreAuthor).channel_url ||
+          (info.videoDetails.author as { channelUrl?: string }).channelUrl ||
+          ""
+        : "";
+
+    const lengthSeconds =
+      typeof info.videoDetails.lengthSeconds === "string"
+        ? Number(info.videoDetails.lengthSeconds)
+        : (info.videoDetails.lengthSeconds as number);
+
+    const viewCount =
+      info.videoDetails.viewCount !== undefined &&
+      info.videoDetails.viewCount !== null
+        ? String(info.videoDetails.viewCount)
+        : "";
+
     return {
       id: videoId,
       title: info.videoDetails.title || "YouTube video",
-      author: info.videoDetails.author?.name || "",
-      authorUrl: info.videoDetails.author?.channelUrl || "",
+      author,
+      authorUrl,
       thumbnail:
         thumbnails[0]?.url ||
         `https://img.youtube.com/vi/${videoId}/maxresdefault.jpg`,
-      duration: formatDuration(info.videoDetails.lengthSeconds),
-      viewCount:
-        info.videoDetails.viewCount !== undefined &&
-        info.videoDetails.viewCount !== null
-          ? String(info.videoDetails.viewCount)
-          : "",
-      description: info.videoDetails.description || "",
+      duration: formatDuration(lengthSeconds),
+      viewCount,
+      description:
+        (info.videoDetails as { description?: string | null }).description || "",
       formats,
       thumbnails,
     };
   }
 
-  const videoId = info.id;
-  const thumbnails = normalizeThumbnails(videoId, [
-    ...(info.thumbnails || []),
-    ...(info.thumbnail ? [{ url: info.thumbnail }] : []),
-  ]);
-  const formats = normalizeYtDlpFormats(info.formats || []);
-
-  if (formats.length === 0) {
-    throw new Error("No playable YouTube formats were returned for this video");
-  }
-
-  return {
-    id: videoId,
-    title: info.title || "YouTube video",
-    author: info.channel || info.uploader || "",
-    authorUrl: info.channel_url || info.uploader_url || "",
-    thumbnail:
-      thumbnails[0]?.url ||
-      `https://img.youtube.com/vi/${videoId}/maxresdefault.jpg`,
-    duration: formatDuration(info.duration),
-    viewCount:
-      info.view_count !== undefined && info.view_count !== null
-        ? String(info.view_count)
-        : "",
-    description: info.description || "",
-    formats,
-    thumbnails,
-  };
+  throw new Error("Unsupported video info format");
 }
 
 export function buildYouTubeFilename(title: string, format: YTFormat): string {

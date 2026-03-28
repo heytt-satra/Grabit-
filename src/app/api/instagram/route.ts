@@ -6,10 +6,8 @@ import {
 } from "instagram-url-direct";
 import {
   extractInstagramShortcode,
-  getInstagramType,
   normalizeInstagramUrl,
 } from "@/lib/platforms";
-import { hasYtDlpBinary, runYtDlp } from "@/lib/yt-dlp";
 
 export interface InstaMedia {
   type: "image" | "video";
@@ -27,35 +25,6 @@ export interface InstaPostData {
   commentCount: number;
   isCarousel: boolean;
   media: InstaMedia[];
-}
-
-interface YtDlpFormat {
-  format_id?: string;
-  url?: string;
-  ext?: string;
-  vcodec?: string;
-  acodec?: string;
-  height?: number;
-  width?: number;
-  tbr?: number;
-}
-
-interface YtDlpThumbnail {
-  url?: string;
-  width?: number;
-  height?: number;
-}
-
-interface YtDlpResponse {
-  id: string;
-  title?: string;
-  description?: string;
-  uploader?: string;
-  like_count?: number;
-  comment_count?: number;
-  thumbnail?: string;
-  thumbnails?: YtDlpThumbnail[];
-  formats?: YtDlpFormat[];
 }
 
 export const runtime = "nodejs";
@@ -183,72 +152,6 @@ async function extractWithInstagramDirect(
   });
 }
 
-function getBestYtDlpVideoUrl(data: YtDlpResponse) {
-  const candidates = (data.formats || [])
-    .filter((format) => format.url && format.vcodec !== "none")
-    .sort((left, right) => {
-      const heightDelta = (right.height || 0) - (left.height || 0);
-      if (heightDelta !== 0) return heightDelta;
-
-      if ((left.acodec !== "none") !== (right.acodec !== "none")) {
-        return left.acodec !== "none" ? -1 : 1;
-      }
-
-      if ((left.ext || "") !== (right.ext || "")) {
-        return left.ext === "mp4" ? -1 : 1;
-      }
-
-      return (right.tbr || 0) - (left.tbr || 0);
-    });
-
-  return candidates[0]?.url || null;
-}
-
-function getBestThumbnail(data: YtDlpResponse) {
-  const thumbnails = [...(data.thumbnails || [])].sort(
-    (left, right) =>
-      (right.width || 0) * (right.height || 0) -
-      (left.width || 0) * (left.height || 0)
-  );
-
-  return thumbnails[0]?.url || data.thumbnail || undefined;
-}
-
-async function extractWithYtDlp(
-  normalizedUrl: string,
-  shortcode: string,
-  signal: AbortSignal
-) {
-  if (!hasYtDlpBinary()) return null;
-
-  try {
-    const { stdout } = await runYtDlp(
-      [normalizedUrl, "--dump-single-json", "--no-warnings", "--no-playlist"],
-      { signal }
-    );
-    const data = JSON.parse(stdout) as YtDlpResponse;
-    const videoUrl = getBestYtDlpVideoUrl(data);
-
-    if (!videoUrl) return null;
-
-    return buildInstaPostData(shortcode, {
-      caption: data.description || "",
-      author: data.uploader || "",
-      likeCount: data.like_count || 0,
-      commentCount: data.comment_count || 0,
-      media: [
-        {
-          type: "video",
-          url: videoUrl,
-          thumbnail: getBestThumbnail(data),
-        },
-      ],
-    });
-  } catch {
-    return null;
-  }
-}
-
 async function extractWithHtml(normalizedUrl: string, shortcode: string) {
   try {
     const response = await fetch(normalizedUrl, {
@@ -313,7 +216,7 @@ async function extractWithHtml(normalizedUrl: string, shortcode: string) {
   }
 }
 
-async function fetchInstaData(url: string, signal: AbortSignal): Promise<InstaPostData> {
+async function fetchInstaData(url: string): Promise<InstaPostData> {
   const normalizedUrl = await resolveInstagramUrl(url);
   const shortcode = normalizedUrl
     ? extractInstagramShortcode(normalizedUrl)
@@ -331,12 +234,6 @@ async function fetchInstaData(url: string, signal: AbortSignal): Promise<InstaPo
     extractorErrors.push(
       error instanceof Error ? error.message : String(error)
     );
-  }
-
-  const instagramType = getInstagramType(normalizedUrl);
-  if (instagramType === "reel" || instagramType === "post") {
-    const ytDlpData = await extractWithYtDlp(normalizedUrl, shortcode, signal);
-    if (ytDlpData) return ytDlpData;
   }
 
   const htmlData = await extractWithHtml(normalizedUrl, shortcode);
@@ -360,7 +257,7 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    const data = await fetchInstaData(url, request.signal);
+    const data = await fetchInstaData(url);
 
     if (data.media.length === 0) {
       return NextResponse.json(

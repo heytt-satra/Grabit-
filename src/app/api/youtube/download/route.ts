@@ -1,61 +1,107 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { spawn } from "node:child_process";
 import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import { NextRequest, NextResponse } from "next/server";
+import { extractYouTubeId } from "@/lib/platforms";
+import { fetchYouTubeData } from "@/lib/innertube";
 import type { YTFormat } from "@/lib/youtube";
 import { buildYouTubeFilename } from "@/lib/youtube";
-import {
-  getFfmpegBinaryPath,
-  hasFfmpegBinary,
-  hasYtDlpBinary,
-  runYtDlp,
-} from "@/lib/yt-dlp";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
 
-const ffmpegPath = getFfmpegBinaryPath();
+function getFfmpegPath(): string | null {
+  try {
+    const ffmpegStatic = require("ffmpeg-static") as string;
+    if (ffmpegStatic && fs.existsSync(ffmpegStatic)) return ffmpegStatic;
+  } catch {
+    // ffmpeg-static not available
+  }
+  return null;
+}
 
-function createTempDownloadDir() {
+function createTempDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "grabit-youtube-"));
 }
 
 function cleanupTempDir(tempDir: string) {
-  fs.rmSync(tempDir, { recursive: true, force: true });
+  try {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  } catch {
+    // best effort
+  }
 }
 
-function buildFormatSelector(format: YTFormat) {
-  if (format.isMuxed) {
-    return format.itag;
+async function downloadUrl(url: string, filePath: string): Promise<void> {
+  const response = await fetch(url);
+  if (!response.ok || !response.body) {
+    throw new Error(`Download failed with status ${response.status}`);
   }
-
-  if (format.container === "webm") {
-    return `${format.itag}+bestaudio[ext=webm]/${format.itag}+bestaudio`;
-  }
-
-  return `${format.itag}+bestaudio[ext=m4a]/${format.itag}+bestaudio`;
+  const nodeStream = Readable.fromWeb(response.body as import("stream/web").ReadableStream);
+  await pipeline(nodeStream, fs.createWriteStream(filePath));
 }
 
-function findCompletedDownload(tempDir: string, printedOutput: string) {
-  const printedCandidate = printedOutput
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .reverse()
-    .find((line) => fs.existsSync(line));
+async function muxWithFfmpeg(
+  ffmpegPath: string,
+  videoPath: string,
+  audioPath: string,
+  outputPath: string,
+  container: string
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const args = [
+      "-y",
+      "-i", videoPath,
+      "-i", audioPath,
+      "-c:v", "copy",
+      "-c:a", "copy",
+      "-movflags", "+faststart",
+    ];
 
-  if (printedCandidate) {
-    return printedCandidate;
-  }
+    if (container === "mp4") {
+      args.push("-f", "mp4");
+    }
 
-  const files = fs
-    .readdirSync(tempDir)
-    .filter((entry) => !entry.endsWith(".part"))
-    .map((entry) => path.join(tempDir, entry))
-    .filter((entry) => fs.statSync(entry).isFile());
+    args.push(outputPath);
 
-  return files[0] || null;
+    const child = spawn(ffmpegPath, args, {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    let stderr = "";
+    child.stderr.on("data", (chunk: Buffer) => {
+      stderr += chunk.toString();
+    });
+
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(`FFmpeg exited with code ${code}: ${stderr.slice(-500)}`));
+    });
+  });
+}
+
+function streamFileAsResponse(
+  filePath: string,
+  filename: string,
+  container: string,
+  onCleanup: () => void
+): NextResponse {
+  const fileStream = fs.createReadStream(filePath);
+  fileStream.on("close", onCleanup);
+  fileStream.on("error", onCleanup);
+
+  return new NextResponse(Readable.toWeb(fileStream) as ReadableStream, {
+    status: 200,
+    headers: {
+      "Cache-Control": "no-store",
+      "Content-Disposition": `attachment; filename="${filename}"`,
+      "Content-Type": container === "webm" ? "video/webm" : "video/mp4",
+    },
+  });
 }
 
 export async function GET(request: NextRequest) {
@@ -70,100 +116,112 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "URL is required" }, { status: 400 });
   }
 
-  if (!hasYtDlpBinary()) {
-    return NextResponse.json(
-      { error: "yt-dlp binary is missing on the server" },
-      { status: 500 }
-    );
+  const videoId = extractYouTubeId(url);
+  if (!videoId) {
+    return NextResponse.json({ error: "Invalid YouTube URL" }, { status: 400 });
   }
 
-  if (!hasFfmpegBinary()) {
-    return NextResponse.json(
-      { error: "FFmpeg binary is missing on the server" },
-      { status: 500 }
-    );
-  }
+  const isMuxed = muxed === "true";
+  const outputContainer = container === "webm" ? "webm" : "mp4";
+  const tempDir = createTempDir();
 
   const selectedFormat: YTFormat = {
     itag: itag || "best",
     url: "",
     quality: quality || "Best",
     qualityLabel: quality || "Best",
-    mimeType: `video/${container || "mp4"}`,
+    mimeType: `video/${outputContainer}`,
     bitrate: 0,
-    hasAudio: muxed === "true",
+    hasAudio: isMuxed,
     hasVideo: true,
-    container: container || "mp4",
-    isMuxed: muxed === "true",
+    container: outputContainer,
+    isMuxed,
   };
-  const outputContainer =
-    selectedFormat.container === "webm" ? "webm" : "mp4";
-  const tempDir = createTempDownloadDir();
-  const outputTemplate = path.join(tempDir, "download.%(ext)s");
 
   try {
-    const args = [
-      url,
-      "--no-playlist",
-      "--no-warnings",
-      "--no-progress",
-      "--force-overwrites",
-      "--output",
-      outputTemplate,
-      "--print",
-      "after_move:filepath",
-      "--ffmpeg-location",
-      ffmpegPath,
-      "--format",
-      buildFormatSelector(selectedFormat),
-    ];
+    const data = await fetchYouTubeData(videoId);
 
-    if (!selectedFormat.isMuxed) {
-      args.push("--merge-output-format", outputContainer);
-    }
+    // Find the requested format
+    const targetItag = itag ? Number(itag) : null;
+    const videoFormat = targetItag
+      ? data.formats.find((f) => f.itag === targetItag)
+      : data.formats[0];
 
-    const { stdout } = await runYtDlp(args, { signal: request.signal });
-    const downloadedFile = findCompletedDownload(tempDir, stdout);
-
-    if (!downloadedFile) {
+    if (!videoFormat) {
       cleanupTempDir(tempDir);
       return NextResponse.json(
-        { error: "yt-dlp did not produce a downloadable file" },
-        { status: 500 }
+        { error: "Requested format not found" },
+        { status: 404 }
       );
     }
 
+    const filename = buildYouTubeFilename(
+      title || data.title || "YouTube video",
+      { ...selectedFormat, container: outputContainer }
+    );
+
+    // Muxed format: download directly
+    if (videoFormat.isMuxed) {
+      const videoPath = path.join(tempDir, `download.${outputContainer}`);
+      await downloadUrl(videoFormat.url, videoPath);
+      return streamFileAsResponse(videoPath, filename, outputContainer, () =>
+        cleanupTempDir(tempDir)
+      );
+    }
+
+    // Non-muxed: try to merge with ffmpeg
+    const ffmpegPath = getFfmpegPath();
+    const audioUrl = data.bestAudioUrl;
+
+    if (!ffmpegPath || !audioUrl) {
+      // No ffmpeg or no audio — download video-only
+      const videoPath = path.join(tempDir, `download.${outputContainer}`);
+      await downloadUrl(videoFormat.url, videoPath);
+      return streamFileAsResponse(videoPath, filename, outputContainer, () =>
+        cleanupTempDir(tempDir)
+      );
+    }
+
+    // Download video + audio in parallel, then merge
+    const videoPath = path.join(tempDir, `video.${outputContainer}`);
+    const audioExt = outputContainer === "webm" ? "webm" : "m4a";
+    const audioPath = path.join(tempDir, `audio.${audioExt}`);
+    const outputPath = path.join(tempDir, `merged.${outputContainer}`);
+
+    await Promise.all([
+      downloadUrl(videoFormat.url, videoPath),
+      downloadUrl(audioUrl, audioPath),
+    ]);
+
+    await muxWithFfmpeg(
+      ffmpegPath,
+      videoPath,
+      audioPath,
+      outputPath,
+      outputContainer
+    );
+
     const finalContainer =
-      path.extname(downloadedFile).replace(/^\./, "") || outputContainer;
-    const filename = buildYouTubeFilename(title || "YouTube video", {
-      ...selectedFormat,
-      container: finalContainer,
-    });
-    const fileStream = fs.createReadStream(downloadedFile);
-    const cleanup = () => cleanupTempDir(tempDir);
+      path.extname(outputPath).replace(/^\./, "") || outputContainer;
 
-    fileStream.on("close", cleanup);
-    fileStream.on("error", cleanup);
-
-    return new NextResponse(Readable.toWeb(fileStream) as ReadableStream, {
-      status: 200,
-      headers: {
-        "Cache-Control": "no-store",
-        "Content-Disposition": `attachment; filename="${filename}"`,
-        "Content-Type":
-          finalContainer === "webm" ? "video/webm" : "video/mp4",
-      },
-    });
+    return streamFileAsResponse(
+      outputPath,
+      buildYouTubeFilename(title || data.title || "YouTube video", {
+        ...selectedFormat,
+        container: finalContainer,
+      }),
+      finalContainer,
+      () => cleanupTempDir(tempDir)
+    );
   } catch (error) {
     cleanupTempDir(tempDir);
-
     const message =
       error instanceof Error ? error.message || String(error) : String(error);
 
     return NextResponse.json(
       {
         error:
-          /sign in|bot|playability/i.test(message)
+          /sign in|bot|playability|login|private|age/i.test(message)
             ? "YouTube blocked this request while preparing the download. Try again in a moment with a public video."
             : message || "Failed to prepare the YouTube download",
       },
