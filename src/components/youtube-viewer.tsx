@@ -16,40 +16,13 @@ import {
 } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
 import { useMemo, useState } from "react";
-
-interface YTFormat {
-  itag: string;
-  quality: string;
-  qualityLabel: string;
-  mimeType: string;
-  bitrate: number;
-  width?: number;
-  height?: number;
-  fps?: number;
-  hasAudio: boolean;
-  hasVideo: boolean;
-  contentLength?: string;
-  container: string;
-  isMuxed: boolean;
-}
-
-interface YTThumbnail {
-  quality: string;
-  url: string;
-  width: number;
-  height: number;
-}
-
-interface YTVideoInfo {
-  id: string;
-  title: string;
-  author: string;
-  thumbnail: string;
-  duration: string;
-  viewCount: string;
-  formats: YTFormat[];
-  thumbnails: YTThumbnail[];
-}
+import {
+  buildYouTubeFilename,
+  type YTFormat,
+  type YTThumbnail,
+  type YTVideoInfo,
+} from "@/lib/youtube";
+import { downloadRemoteFileInBrowser } from "@/lib/youtube-browser";
 
 interface Props {
   data: YTVideoInfo | null;
@@ -69,23 +42,25 @@ function formatBytes(bytes: number): string {
 function formatViews(value: string): string {
   const count = Number(value);
   if (!Number.isFinite(count) || count <= 0) return value;
-  if (count >= 1_000_000) return `${(count / 1_000_000).toFixed(1).replace(/\.0$/, "")}M views`;
-  if (count >= 1_000) return `${(count / 1_000).toFixed(1).replace(/\.0$/, "")}K views`;
+  if (count >= 1_000_000) {
+    return `${(count / 1_000_000).toFixed(1).replace(/\.0$/, "")}M views`;
+  }
+  if (count >= 1_000) {
+    return `${(count / 1_000).toFixed(1).replace(/\.0$/, "")}K views`;
+  }
   return `${count} views`;
 }
 
 function describeFormat(format: YTFormat): string {
-  const parts = [`${format.qualityLabel}`, format.container.toUpperCase()];
+  const parts = [format.qualityLabel, format.container.toUpperCase()];
 
   if (format.contentLength) {
     parts.push(formatBytes(Number(format.contentLength)));
   }
 
-  if (!format.isMuxed) {
-    parts.push("merged with best audio");
-  }
+  parts.push(format.isMuxed ? "video + audio" : "merged with audio");
 
-  return parts.join(" • ");
+  return parts.join(" | ");
 }
 
 export function YouTubeViewer({ data, loading }: Props) {
@@ -116,8 +91,11 @@ export function YouTubeViewer({ data, loading }: Props) {
 
   if (!data) return null;
 
-  const currentFormat =
-    data.formats.find((format) => format.itag === selectedFormat) || data.formats[0];
+  const preferredFormat =
+    data.formats.find((format) => format.itag === selectedFormat) ||
+    data.formats.find((format) => !format.isMuxed) ||
+    data.formats.find((format) => format.isMuxed) ||
+    data.formats[0];
 
   const startDownload = (downloadUrl: string, filenameHint: string) => {
     const link = document.createElement("a");
@@ -129,28 +107,39 @@ export function YouTubeViewer({ data, loading }: Props) {
   };
 
   const handleVideoDownload = async () => {
-    if (!currentFormat) return;
+    if (!preferredFormat) return;
 
     setDownloading(true);
 
     try {
-      const downloadUrl = `/api/youtube/download?url=${encodeURIComponent(
-        `https://www.youtube.com/watch?v=${data.id}`
-      )}&itag=${encodeURIComponent(currentFormat.itag)}`;
+      const filename = buildYouTubeFilename(data.title, preferredFormat);
 
-      startDownload(downloadUrl, `${data.title}_${currentFormat.qualityLabel}.${currentFormat.container}`);
+      if (preferredFormat.isMuxed) {
+        await downloadRemoteFileInBrowser(preferredFormat.url, filename);
+      } else {
+        startDownload(
+          `/api/youtube/download?url=${encodeURIComponent(
+            `https://www.youtube.com/watch?v=${data.id}`
+          )}&itag=${encodeURIComponent(preferredFormat.itag)}&quality=${encodeURIComponent(
+            preferredFormat.qualityLabel
+          )}&container=${encodeURIComponent(preferredFormat.container)}&title=${encodeURIComponent(
+            data.title
+          )}&muxed=${encodeURIComponent(String(preferredFormat.isMuxed))}`,
+          filename
+        );
+      }
 
       notifications.show({
-        title: "Download started",
-        message: currentFormat.isMuxed
-          ? `${currentFormat.qualityLabel} is downloading now`
-          : `${currentFormat.qualityLabel} will be merged with the best audio before download`,
+        title: preferredFormat.isMuxed ? "Download ready" : "Preparing high-quality download",
+        message: preferredFormat.isMuxed
+          ? filename
+          : `${preferredFormat.qualityLabel} will be downloaded as one file with audio`,
         color: "green",
       });
-    } catch {
+    } catch (error) {
       notifications.show({
         title: "Download failed",
-        message: "Please try again",
+        message: error instanceof Error ? error.message : "Please try again",
         color: "red",
       });
     } finally {
@@ -195,7 +184,7 @@ export function YouTubeViewer({ data, loading }: Props) {
             {data.viewCount && (
               <>
                 <Text size="sm" c="dimmed">
-                  ·
+                  |
                 </Text>
                 <Text size="sm" c="dimmed">
                   {formatViews(data.viewCount)}
@@ -219,7 +208,7 @@ export function YouTubeViewer({ data, loading }: Props) {
                     Select quality
                   </Text>
                   <Select
-                    value={currentFormat?.itag || null}
+                    value={preferredFormat?.itag || null}
                     onChange={setSelectedFormat}
                     data={formatOptions}
                     placeholder="Choose the quality you want"
@@ -227,20 +216,33 @@ export function YouTubeViewer({ data, loading }: Props) {
                     searchable={false}
                   />
 
-                  {currentFormat && (
-                    <Group gap="xs">
-                      <Badge variant="light" radius="lg" color="red">
-                        {currentFormat.qualityLabel}
-                      </Badge>
-                      <Badge variant="light" radius="lg" color="gray">
-                        {currentFormat.container.toUpperCase()}
-                      </Badge>
-                      {!currentFormat.isMuxed && (
-                        <Badge variant="light" radius="lg" color="blue">
-                          Best audio merged automatically
+                  {preferredFormat && (
+                    <>
+                      <Group gap="xs">
+                        <Badge variant="light" radius="lg" color="red">
+                          {preferredFormat.qualityLabel}
                         </Badge>
+                        <Badge variant="light" radius="lg" color="gray">
+                          {preferredFormat.container.toUpperCase()}
+                        </Badge>
+                        <Badge
+                          variant="light"
+                          radius="lg"
+                          color={preferredFormat.isMuxed ? "green" : "blue"}
+                        >
+                          {preferredFormat.isMuxed ? "Video + audio" : "Merged with audio"}
+                        </Badge>
+                      </Group>
+
+                      {!preferredFormat.isMuxed && (
+                        <Paper p="sm" radius="md" bg="var(--mantine-color-blue-light)">
+                          <Text size="sm" c="blue.9">
+                            This quality uses separate YouTube streams, so GrabIt will merge the
+                            best matching audio into the final download for you.
+                          </Text>
+                        </Paper>
                       )}
-                    </Group>
+                    </>
                   )}
 
                   <Button
@@ -264,7 +266,7 @@ export function YouTubeViewer({ data, loading }: Props) {
                       </svg>
                     }
                   >
-                    Download {currentFormat?.qualityLabel || "Video"}
+                    Download {preferredFormat?.qualityLabel || "Video"}
                   </Button>
                 </>
               ) : (

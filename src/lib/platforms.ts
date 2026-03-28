@@ -1,4 +1,4 @@
-export type Platform = "twitter" | "instagram" | "youtube" | "linkedin" | "universal";
+export type Platform = "twitter" | "instagram" | "youtube" | "universal";
 
 export interface PlatformInfo {
   platform: Platform;
@@ -8,11 +8,30 @@ export interface PlatformInfo {
 }
 
 const PLATFORM_MAP: Record<Platform, PlatformInfo> = {
-  twitter: { platform: "twitter", label: "X / Twitter", color: "#1d9bf0", icon: "x" },
-  instagram: { platform: "instagram", label: "Instagram", color: "#E1306C", icon: "instagram" },
-  youtube: { platform: "youtube", label: "YouTube", color: "#FF0000", icon: "youtube" },
-  linkedin: { platform: "linkedin", label: "LinkedIn", color: "#0A66C2", icon: "linkedin" },
-  universal: { platform: "universal", label: "Screenshot", color: "#8b5cf6", icon: "globe" },
+  twitter: {
+    platform: "twitter",
+    label: "X / Twitter",
+    color: "#1d9bf0",
+    icon: "x",
+  },
+  instagram: {
+    platform: "instagram",
+    label: "Instagram",
+    color: "#E1306C",
+    icon: "instagram",
+  },
+  youtube: {
+    platform: "youtube",
+    label: "YouTube",
+    color: "#FF0000",
+    icon: "youtube",
+  },
+  universal: {
+    platform: "universal",
+    label: "Screenshot",
+    color: "#8b5cf6",
+    icon: "globe",
+  },
 };
 
 export function detectPlatform(url: string): Platform {
@@ -20,7 +39,6 @@ export function detectPlatform(url: string): Platform {
   if (/^https?:\/\/(www\.)?(twitter\.com|x\.com)\//.test(u)) return "twitter";
   if (/^https?:\/\/(www\.)?instagram\.com\//.test(u)) return "instagram";
   if (/^https?:\/\/(www\.)?(youtube\.com|youtu\.be)\//.test(u)) return "youtube";
-  if (/^https?:\/\/(www\.)?linkedin\.com\//.test(u)) return "linkedin";
   return "universal";
 }
 
@@ -36,7 +54,6 @@ function parseUrl(url: string): URL | null {
   }
 }
 
-// --- Instagram URL parsing ---
 export function extractInstagramShortcode(url: string): string | null {
   const parsed = parseUrl(url);
   if (!parsed || !parsed.hostname.toLowerCase().includes("instagram.com")) return null;
@@ -90,16 +107,17 @@ export function normalizeInstagramUrl(url: string): string | null {
   return `https://www.instagram.com/${normalizedType}/${shortcode}/`;
 }
 
-// --- YouTube URL parsing ---
 export function extractYouTubeId(url: string): string | null {
   const patterns = [
     /(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/|youtube\.com\/shorts\/)([A-Za-z0-9_-]{11})/,
     /youtube\.com\/.*[?&]v=([A-Za-z0-9_-]{11})/,
   ];
-  for (const p of patterns) {
-    const m = url.match(p);
-    if (m) return m[1];
+
+  for (const pattern of patterns) {
+    const match = url.match(pattern);
+    if (match) return match[1];
   }
+
   return null;
 }
 
@@ -107,31 +125,6 @@ export function isYouTubeShorts(url: string): boolean {
   return /youtube\.com\/shorts\//.test(url);
 }
 
-// --- LinkedIn URL parsing ---
-export function extractLinkedInActivityId(url: string): string | null {
-  const m = url.match(/(?:activity|share)[:-](\d+)/i) || url.match(/activity-(\d+)/i);
-  return m ? m[1] : null;
-}
-
-export function normalizeLinkedInUrl(url: string): string | null {
-  const parsed = parseUrl(url);
-  if (!parsed || !parsed.hostname.toLowerCase().includes("linkedin.com")) return null;
-
-  const activityId = extractLinkedInActivityId(url);
-  const cleanedPath = parsed.pathname.replace(/\/+$/, "");
-
-  if (/\/feed\/update\/urn:li:share:/i.test(cleanedPath) && activityId) {
-    return `https://www.linkedin.com/feed/update/urn:li:activity:${activityId}/`;
-  }
-
-  if (/\/feed\/update\/urn:li:activity:/i.test(cleanedPath) && activityId) {
-    return `https://www.linkedin.com/feed/update/urn:li:activity:${activityId}/`;
-  }
-
-  return `https://www.linkedin.com${cleanedPath || "/"}`;
-}
-
-// --- General ---
 export function isValidUrl(url: string): boolean {
   return parseUrl(url) !== null;
 }

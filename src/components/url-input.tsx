@@ -14,29 +14,32 @@ interface UrlInputProps {
 export function UrlInput({
   onSubmit,
   loading = false,
-  placeholder = "Paste any URL — Twitter, Instagram, YouTube, LinkedIn, or any website...",
+  placeholder = "Paste any URL - Twitter, Instagram, YouTube, or any website...",
 }: UrlInputProps) {
   const [url, setUrl] = useState("");
   const [error, setError] = useState("");
 
-  const detectedPlatform = url.trim() && isValidUrl(url.trim()) ? detectPlatform(url.trim()) : null;
+  const detectedPlatform =
+    url.trim() && isValidUrl(url.trim()) ? detectPlatform(url.trim()) : null;
 
   const handleSubmit = useCallback(() => {
     if (!url.trim()) {
       setError("Please enter a URL");
       return;
     }
+
     if (!isValidUrl(url.trim())) {
       setError("Please enter a valid URL");
       return;
     }
+
     setError("");
     onSubmit(url.trim());
   }, [url, onSubmit]);
 
   const handlePaste = useCallback(
-    (e: React.ClipboardEvent) => {
-      const pasted = e.clipboardData.getData("text");
+    (event: React.ClipboardEvent) => {
+      const pasted = event.clipboardData.getData("text");
       if (isValidUrl(pasted.trim())) {
         setError("");
         setTimeout(() => onSubmit(pasted.trim()), 100);
@@ -55,12 +58,12 @@ export function UrlInput({
             radius="xl"
             placeholder={placeholder}
             value={url}
-            onChange={(e) => {
-              setUrl(e.currentTarget.value);
+            onChange={(event) => {
+              setUrl(event.currentTarget.value);
               setError("");
             }}
             onPaste={handlePaste}
-            onKeyDown={(e) => e.key === "Enter" && handleSubmit()}
+            onKeyDown={(event) => event.key === "Enter" && handleSubmit()}
             error={error}
             styles={{
               input: {
@@ -83,7 +86,7 @@ export function UrlInput({
             <PlatformBadge platform={detectedPlatform} />
           ) : (
             <Text size="xs" c="dimmed">
-              Supports X, Instagram, YouTube, LinkedIn, and any website
+              Supports X, Instagram, YouTube, and any website
             </Text>
           )}
         </Group>

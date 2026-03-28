@@ -25,10 +25,6 @@ export async function GET(request: NextRequest) {
     "ytimg.com",
     "img.youtube.com",
     "ggpht.com",
-    // LinkedIn
-    "licdn.com",
-    "linkedin.com",
-    "media.licdn.com",
   ];
   let parsedUrl: URL;
   try {
@@ -47,7 +43,6 @@ export async function GET(request: NextRequest) {
     if (parsedUrl.hostname.includes("twimg")) referer = "https://x.com/";
     else if (parsedUrl.hostname.includes("instagram") || parsedUrl.hostname.includes("fbcdn")) referer = "https://www.instagram.com/";
     else if (parsedUrl.hostname.includes("youtube") || parsedUrl.hostname.includes("googlevideo") || parsedUrl.hostname.includes("ytimg")) referer = "https://www.youtube.com/";
-    else if (parsedUrl.hostname.includes("licdn") || parsedUrl.hostname.includes("linkedin")) referer = "https://www.linkedin.com/";
 
     const resp = await fetch(videoUrl, {
       headers: {

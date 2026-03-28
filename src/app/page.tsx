@@ -27,7 +27,6 @@ import { PlatformBadge } from "@/components/platform-badge";
 import { VideoPicker } from "@/components/video-picker";
 import { InstagramViewer } from "@/components/instagram-viewer";
 import { YouTubeViewer } from "@/components/youtube-viewer";
-import { LinkedInViewer } from "@/components/linkedin-viewer";
 import { ScreenCapture } from "@/components/screen-capture";
 import {
   TweetCard,
@@ -37,6 +36,7 @@ import {
 import { ContentCard, type PageMeta } from "@/components/content-card";
 import { ScreenshotEditor } from "@/components/screenshot-editor";
 import { detectPlatform, type Platform } from "@/lib/platforms";
+import type { YTVideoInfo } from "@/lib/youtube";
 import type { TweetData, VideoData } from "@/lib/twitter";
 
 const MotionDiv = motion.div;
@@ -59,56 +59,6 @@ interface InstaPostData {
   media: InstaMedia[];
 }
 
-interface YTFormat {
-  itag: string;
-  quality: string;
-  qualityLabel: string;
-  mimeType: string;
-  bitrate: number;
-  width?: number;
-  height?: number;
-  fps?: number;
-  hasAudio: boolean;
-  hasVideo: boolean;
-  contentLength?: string;
-  container: string;
-  isMuxed: boolean;
-}
-
-interface YTThumbnail {
-  quality: string;
-  url: string;
-  width: number;
-  height: number;
-}
-
-interface YTVideoInfo {
-  id: string;
-  title: string;
-  author: string;
-  authorUrl: string;
-  thumbnail: string;
-  duration: string;
-  viewCount: string;
-  description: string;
-  formats: YTFormat[];
-  thumbnails: YTThumbnail[];
-}
-
-interface LinkedInPostData {
-  title: string;
-  description: string;
-  author: string;
-  authorImage: string;
-  image: string;
-  videoUrl: string | null;
-  videoQuality: string;
-  documentImages: string[];
-  documentPdfUrl: string | null;
-  documentPageCount: number;
-  type: "video" | "image" | "document" | "text";
-}
-
 export default function Home() {
   const [topTab, setTopTab] = useState<string | null>("grab");
   const [activeTab, setActiveTab] = useState<string | null>("download");
@@ -126,9 +76,6 @@ export default function Home() {
   // YouTube state
   const [ytData, setYtData] = useState<YTVideoInfo | null>(null);
 
-  // LinkedIn state
-  const [linkedinData, setLinkedinData] = useState<LinkedInPostData | null>(null);
-
   // Universal screenshot state
   const [pageMeta, setPageMeta] = useState<PageMeta | null>(null);
 
@@ -142,7 +89,6 @@ export default function Home() {
     setVideo(null);
     setInstaData(null);
     setYtData(null);
-    setLinkedinData(null);
     setPageMeta(null);
   };
 
@@ -189,15 +135,6 @@ export default function Home() {
             throw new Error(err.error || "Failed to fetch YouTube data");
           }
           setYtData(await resp.json());
-          break;
-        }
-        case "linkedin": {
-          const resp = await fetch(`/api/linkedin?url=${encodeURIComponent(url)}`);
-          if (!resp.ok) {
-            const err = await resp.json();
-            throw new Error(err.error || "Failed to fetch LinkedIn data");
-          }
-          setLinkedinData(await resp.json());
           break;
         }
         case "universal": {
@@ -283,7 +220,7 @@ export default function Home() {
     }
   }, [settings.scale]);
 
-  const hasContent = tweet || instaData || ytData || linkedinData || pageMeta || loading;
+  const hasContent = Boolean(tweet || instaData || ytData || pageMeta || loading);
 
   // Determine if screenshot is available
   const canScreenshot = platform === "twitter" ? !!tweet : !!pageMeta;
@@ -335,7 +272,7 @@ export default function Home() {
               Anything
             </Title>
             <Text size="lg" c="dimmed" maw={540} mx="auto">
-              Grab videos from X, Instagram, YouTube & LinkedIn.
+              Grab videos from X, Instagram, and YouTube.
               Create beautiful screenshots of any content. No login required.
             </Text>
           </MotionDiv>
@@ -445,10 +382,6 @@ export default function Home() {
                               <YouTubeViewer data={ytData} loading={false} />
                             )}
 
-                            {platform === "linkedin" && (
-                              <LinkedInViewer data={linkedinData} loading={false} postUrl={currentUrl} />
-                            )}
-
                             {platform === "universal" && pageMeta && (
                               <Card radius="lg" withBorder p="lg">
                                 <Stack gap="md">
@@ -482,7 +415,7 @@ export default function Home() {
                               </Card>
                             )}
 
-                            {!loading && !tweet && !instaData && !ytData && !linkedinData && !pageMeta && (
+                            {!loading && !tweet && !instaData && !ytData && !pageMeta && (
                               <Paper p="xl" radius="lg" withBorder ta="center">
                                 <Text c="dimmed" size="lg">
                                   Could not fetch content from this URL.
@@ -596,7 +529,7 @@ export default function Home() {
         <Container size="lg">
           <Group justify="space-between" wrap="wrap" gap="sm">
             <Text size="xs" c="dimmed">
-              GrabIt is not affiliated with X, Instagram, LinkedIn, or YouTube.
+              GrabIt is not affiliated with X, Instagram, or YouTube.
               For personal use only. Respect content creators&apos; rights.
             </Text>
             <Text size="xs" c="dimmed">

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { fetchYouTubeInfo } from "@/lib/youtube";
+import { normalizeYouTubeInfo } from "@/lib/youtube";
+import { hasYtDlpBinary, runYtDlp } from "@/lib/yt-dlp";
 
 export const runtime = "nodejs";
 
@@ -10,14 +11,31 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "URL is required" }, { status: 400 });
   }
 
-  try {
-    const data = await fetchYouTubeInfo(url);
-    return NextResponse.json(data);
-  } catch (err) {
-    const message =
-      err instanceof Error ? err.message || String(err) : String(err);
+  if (!hasYtDlpBinary()) {
     return NextResponse.json(
-      { error: message || "Failed to fetch YouTube data" },
+      { error: "yt-dlp binary is missing on the server" },
+      { status: 500 }
+    );
+  }
+
+  try {
+    const { stdout } = await runYtDlp(
+      [url, "--dump-single-json", "--no-warnings", "--skip-download", "--no-playlist"],
+      { signal: request.signal }
+    );
+
+    return NextResponse.json(normalizeYouTubeInfo(JSON.parse(stdout)));
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message || String(error) : String(error);
+
+    return NextResponse.json(
+      {
+        error:
+          /sign in|bot|playability/i.test(message)
+            ? "YouTube blocked this request while resolving the video formats. Try again in a moment with a public video."
+            : message || "Failed to fetch YouTube data",
+      },
       { status: 500 }
     );
   }
